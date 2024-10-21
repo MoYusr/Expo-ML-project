@@ -1,120 +1,120 @@
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
-from statsmodels.tsa.arima.model import ARIMA
-import plotly.graph_objs as go
+import xgboost as xgb
 
-# Load the dataset
-df = pd.read_csv("global-data-on-sustainable-energy (1).csv")
-print(df.head(5))
+# Load your dataset
+df = pd.read_csv('global-data-on-sustainable-energy (1).csv')
 
-# Check for missing values
-print(df.isnull().sum())
+# Check the data structure
+print("DataFrame Head:")
+print(df.head())
 
-# Convert 'Year' to integer type, handling non-integer values if necessary
-df['Year'] = pd.to_numeric(df['Year'], errors='coerce').fillna(0).astype(int)
+# Check the columns
+print("Columns in the DataFrame:")
+print(df.columns)
 
-# Select numeric columns for scaling
-numeric_columns = ['Year', 'Access to electricity (% of population)', 
-                   'Electricity from fossil fuels (TWh)', 
-                   'Electricity from nuclear (TWh)', 
-                   'Electricity from renewables (TWh)', 
-                   'Renewable energy share in the total final energy consumption (%)', 
-                   'Primary energy consumption per capita (kWh/person)']
+# Check unique country names
+print("Unique Countries in the DataFrame:")
+print(df['Entity'].unique())
 
-# Select non-numeric columns to keep
-non_numeric_columns = ['Entity']
+# Check for missing values in the relevant column
+print("Missing values in 'Primary energy consumption per capita (kWh/person)':")
+print(df['Primary energy consumption per capita (kWh/person)'].isnull().sum())
 
-# Extract numeric and non-numeric columns separately
-numeric_features = df[numeric_columns]
-non_numeric_features = df[non_numeric_columns]
+# Preprocess the data
+df['Year'] = pd.to_datetime(df['Year'], format='%Y').dt.year  # Extract year as an integer
+df['Consumption'] = df['Primary energy consumption per capita (kWh/person)'].astype(float)
 
-# Initialize the scaler
-scaler = MinMaxScaler()
+# Check data for the United States
+us_data = df[df['Entity'] == 'United States']
+print("Data for United States before feature creation:")
+print(us_data)
 
-# Scale the numeric features
-scaled_numeric_features = scaler.fit_transform(numeric_features)
+# Function to create features for forecasting
+def create_features(data):
+    data['Lag1'] = data['Consumption'].shift(1)
+    data['Lag2'] = data['Consumption'].shift(2)
+    data['Lag3'] = data['Consumption'].shift(3)
+    data['RollingMean'] = data['Consumption'].rolling(window=3).mean()
 
-# Convert back to DataFrame for numeric columns
-scaled_numeric_df = pd.DataFrame(scaled_numeric_features, columns=numeric_columns)
+    print("Data after feature creation:")
+    print(data)
 
-# Concatenate the non-numeric columns with scaled numeric columns
-final_df = pd.concat([non_numeric_features.reset_index(drop=True), scaled_numeric_df.reset_index(drop=True)], axis=1)
+    # Remove rows with NaN values
+    data.dropna(inplace=True)
 
-# Function to forecast energy consumption for a given country
-def forecast_energy_consumption(country, steps=30):
-    # Filter data for the selected country
-    country_data = final_df[final_df['Entity'] == country].copy()
-    
-    # Check if the country data has enough points for ARIMA
-    if len(country_data) < 2:  # Change this threshold based on your needs
-        print(f"Not enough data to forecast for {country}")
-        return None, None, None
+    # Check if we have enough rows after dropping NaN values
+    if data.shape[0] < 4:  # Less than 4 rows after dropping means insufficient data
+        print("Not enough data after feature creation.")
+        return data.iloc[0:0]  # Return empty DataFrame
 
-    # Set the index to Year for time series analysis and convert to datetime
-    country_data['Year'] = pd.to_datetime(country_data['Year'], format='%Y')
-    country_data.set_index('Year', inplace=True)
+    return data
 
-    # Train ARIMA model on the country's energy consumption data
-    model = ARIMA(country_data['Primary energy consumption per capita (kWh/person)'], order=(5, 1, 0))
-    
+# Function to generate forecasts using XGBoost
+def generate_xgb_forecast(country, steps=30):
     try:
-        model_fit = model.fit()
-        # Forecast for the next 'steps' years
-        forecast = model_fit.forecast(steps=steps)
+        country_data = df[df['Entity'] == country].copy()
         
-        # Create future year range as a list of years
-        future_years = list(range(country_data.index.year.max() + 1, country_data.index.year.max() + 1 + steps))
+        # Check if the filtered data is empty
+        if country_data.empty:
+            print(f"No data available for {country}.")
+            return None, None
         
-        return country_data, forecast, future_years
+        print(f"Data for {country}:")
+        print(country_data)
+
+        country_data = create_features(country_data)
+
+        # Check if the data after creating features is empty
+        if country_data.empty:
+            print(f"No valid data available for feature creation for {country}.")
+            return None, None
+        
+        # Prepare data for XGBoost
+        X = country_data[['Year', 'Lag1', 'Lag2', 'Lag3', 'RollingMean']]
+        y = country_data['Consumption']
+
+        # Check if X or y is empty
+        if X.empty or y.empty:
+            print(f"Empty feature set or target for {country}.")
+            return None, None
+
+        # Print sizes of X and y
+        print("Feature set size:", X.shape)
+        print("Target size:", y.shape)
+
+        # Split into train and test sets
+        if len(y) > steps:
+            train_X = X[:-steps]
+            train_y = y[:-steps]
+            test_X = X[-steps:]
+        else:
+            print(f"Not enough data for {country} to split into train and test sets.")
+            return None, None
+
+        # Train the model
+        model = xgb.XGBRegressor(objective='reg:squarederror')
+        model.fit(train_X, train_y)
+
+        # Forecasting
+        forecast = []
+        for i in range(steps):
+            input_data = test_X.iloc[i].values.reshape(1, -1)
+            forecast_value = model.predict(input_data)
+            forecast.append(forecast_value[0])
+
+        last_year = country_data['Year'].iloc[-1]
+        forecast_years = [last_year + i + 1 for i in range(steps)]
+
+        return forecast, forecast_years
     except Exception as e:
         print(f"Could not generate forecast for {country}: {e}")
-        return None, None, None
+        return None, None
 
-# Example of forecasting for all countries
-countries = final_df['Entity'].unique()
-forecast_results = {}
+# Test for a specific country
+forecast, years = generate_xgb_forecast('United States')
 
-for country in countries:
-    historical_data, forecast, future_years = forecast_energy_consumption(country)
-    if forecast is not None:  # Ensure there's a valid forecast
-        forecast_results[country] = {
-            'historical_years': historical_data.index.year.tolist(),
-            'historical_consumption': historical_data['Primary energy consumption per capita (kWh/person)'].tolist(),
-            'future_years': future_years,
-            'forecast': forecast.tolist()
-        }
-
-# Create a Plotly figure with interactive dropdown for countries
-fig = go.Figure()
-
-# Add the first country's data (initially selected)
-initial_country = countries[0]
-fig.add_trace(go.Scatter(x=forecast_results[initial_country]['historical_years'],
-                         y=forecast_results[initial_country]['historical_consumption'],
-                         mode='lines', name=f'{initial_country} Historical'))
-
-fig.add_trace(go.Scatter(x=forecast_results[initial_country]['future_years'],
-                         y=forecast_results[initial_country]['forecast'],
-                         mode='lines', name=f'{initial_country} Forecast', line=dict(dash='dash')))
-
-# Add layout and dropdown
-fig.update_layout(
-    title='Energy Consumption Forecast per Country',
-    xaxis_title='Year',
-    yaxis_title='Energy Consumption',
-    updatemenus=[{
-        'buttons': [
-            {
-                'args': [{'x': [forecast_results[country]['historical_years'], forecast_results[country]['future_years']],
-                          'y': [forecast_results[country]['historical_consumption'], forecast_results[country]['forecast']]}],
-                'label': country,
-                'method': 'update'
-            } for country in countries
-        ],
-        'direction': 'down',
-        'showactive': True
-    }]
-)
-
-# Show the figure
-fig.show()
+if forecast is not None and years is not None:
+    print(f"Forecast for United States for years {years}:")
+    print(forecast)
+else:
+    print("Forecast generation failed.")
