@@ -51,6 +51,7 @@ for country in selected_countries:
             y=country_data["Renewable-electricity-generating-capacity-per-capita"],
             mode="lines+markers",
             name=f"{country} - Renewable electricity generating capacity per capita",
+            visible="legendonly"
         )
     )
 
