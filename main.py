@@ -31,6 +31,7 @@ for country in selected_countries:
             y=country_data["Access to electricity (% of population)"],
             mode="lines+markers",
             name=f"{country} - Access to electricity (% of population)",
+            visible="legendonly"
         )
     )
 
@@ -40,6 +41,7 @@ for country in selected_countries:
             y=country_data["Access to clean fuels for cooking"],
             mode="lines+markers",
             name=f"{country} - Access to clean fuels for cooking",
+            visible="legendonly"
         )
     )
 
